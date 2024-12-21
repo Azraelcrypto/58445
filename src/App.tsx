@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import UniversalProvider from "@walletconnect/universal-provider";
 import { WalletConnectModal } from "@walletconnect/modal";
 import { TronService, TronChains } from "./utils/tronService";
+import trustWalletLogo from './assets/trustwallet.svg'; // Import the Trust Wallet logo
 
 // Environment variables
 const projectId = import.meta.env.VITE_PROJECT_ID || '';
